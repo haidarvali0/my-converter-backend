@@ -9,39 +9,38 @@ class PDFConverter:
     @staticmethod
     def to_image(input_path, output_folder, unique_id):
         """
-        PDF ko JPG mein convert karo
-        - 3 ya kam pages = JSON mein base64 images
-        - 4+ pages = ZIP file
+        PDF ko JPG mein convert karo - MEMORY EFFICIENT
+        - 5 ya kam pages = JSON mein base64 images
+        - 6-25 pages = ZIP file (ek-ek karke process)
+        - 25+ pages = Error (free tier limit)
         """
         try:
-            from pdf2image import convert_from_path
+            from pdf2image import convert_from_path, pdfinfo_from_path
 
-            # PDF convert karo
-            images = convert_from_path(
-                input_path,
-                dpi=150,
-                fmt='jpeg'
-            )
+            # Step 1: Pehle sirf page count nikalo (bina memory use kiye)
+            info = pdfinfo_from_path(input_path)
+            total_pages = int(info["Pages"])
 
-            total_pages = len(images)
+            # Step 2: FREE TIER LIMIT - 25 pages max
+            MAX_PAGES = 25
+            if total_pages > MAX_PAGES:
+                return {
+                    'success': False,
+                    'error': f'Free version mein sirf {MAX_PAGES} pages tak allowed. Aapki PDF mein {total_pages} pages hain. Kam pages wali PDF daalo.'
+                }
 
             # =========================================
-            # 3 ya kam pages - Base64 JSON return karo
+            # CASE 1: 5 ya kam pages = Direct Images
             # =========================================
-            if total_pages <= 3:
+            if total_pages <= 5:
+                images = convert_from_path(input_path, dpi=100, fmt='jpeg')
                 encoded_images = []
 
-                for i, img in enumerate(images):
-                    # Image ko bytes mein convert karo
+                for img in images:
                     buffer = BytesIO()
-                    img.save(buffer, format='JPEG', quality=90)
+                    img.save(buffer, format='JPEG', quality=85)
                     buffer.seek(0)
-
-                    # Base64 encode karo
-                    encoded = base64.b64encode(
-                        buffer.getvalue()
-                    ).decode('utf-8')
-
+                    encoded = base64.b64encode(buffer.getvalue()).decode('utf-8')
                     encoded_images.append(encoded)
 
                 return {
@@ -52,31 +51,38 @@ class PDFConverter:
                 }
 
             # =========================================
-            # 4+ pages - ZIP file banao
+            # CASE 2: 6-25 pages = ZIP (Memory Efficient)
             # =========================================
             else:
                 zip_filename = f"{unique_id}_pages.zip"
                 zip_path = os.path.join(output_folder, zip_filename)
 
-                with zipfile.ZipFile(
-                    zip_path, 'w', zipfile.ZIP_DEFLATED
-                ) as zip_file:
-
-                    for i, img in enumerate(images):
-                        # Image bytes
-                        img_buffer = BytesIO()
-                        img.save(
-                            img_buffer,
-                            format='JPEG',
-                            quality=90
+                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                    
+                    # EK-EK PAGE process karo - memory bachao
+                    for page_num in range(1, total_pages + 1):
+                        images = convert_from_path(
+                            input_path,
+                            dpi=100,              # Lower DPI = less memory
+                            first_page=page_num,
+                            last_page=page_num,   # Sirf 1 page
+                            fmt='jpeg'
                         )
-                        img_buffer.seek(0)
 
-                        # ZIP mein daal do
-                        zip_file.writestr(
-                            f'Page_{i + 1:03d}.jpg',
-                            img_buffer.getvalue()
-                        )
+                        if images:
+                            img = images[0]
+                            img_buffer = BytesIO()
+                            img.save(img_buffer, format='JPEG', quality=85)
+                            img_buffer.seek(0)
+
+                            zip_file.writestr(
+                                f'Page_{page_num:03d}.jpg',
+                                img_buffer.getvalue()
+                            )
+
+                            # Memory free karo explicitly
+                            del img
+                            del images
 
                 return {
                     'success': True,
